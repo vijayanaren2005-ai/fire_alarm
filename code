@@ -1,0 +1,98 @@
+// ESP32 Fire Monitoring System - ThingSpeak + Local Buzzer
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "DHT.h"
+
+// ---------- WiFi CONFIG ----------
+const char* ssid = "Esp_fire";        // 🔹 Enter your WiFi SSID
+const char* password = "12345678"; // 🔹 Enter your WiFi Password
+
+// ---------- ThingSpeak CONFIG ----------
+String thingspeakApiKey = "F5S1D7K707DFAG6Q";  // 🔹 Your ThingSpeak Write API Key
+const char* thingspeakHost = "http://api.thingspeak.com/update";
+
+// ---------- Sensor Pins ----------
+#define MQ2_PIN 34       // Smoke sensor (Analog)
+
+
+#define FLAME_PIN 25     // Flame sensor (Digital)
+#define DHTPIN 26        // DHT11 data pin
+#define BUZZER_PIN 27    // Buzzer (through transistor)
+
+// ---------- DHT Setup ----------
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ---------- Thresholds ----------
+const int SMOKE_THRESHOLD = 300;    // Adjust after calibration
+const float TEMP_THRESHOLD = 50.0;  // Celsius
+// Flame sensor: usually LOW = Flame detected
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  dht.begin();
+
+  pinMode(FLAME_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // WiFi Connection
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n✅ WiFi connected!");
+}
+
+void loop() {
+  // --- Read Sensors ---
+  int smokeVal = analogRead(MQ2_PIN);   // 0-4095 (ESP32 ADC)
+  if (smokeVal > 1023) {
+    smokeVal = map(smokeVal, 0, 4095, 0, 1023); // Normalize to 0-1023
+  }
+
+  int flameVal = digitalRead(FLAME_PIN); // 0 = Flame detected
+  float humidity = dht.readHumidity();
+  float temp = dht.readTemperature();
+
+  Serial.printf("Smoke: %d | Flame: %d | Temp: %.1f C | Hum: %.1f %%\n",
+                smokeVal, flameVal, temp, humidity);
+
+  // --- Fire Detection Logic ---
+  bool fireDetected = false;
+  if (smokeVal > SMOKE_THRESHOLD) fireDetected = true;
+  if (temp > TEMP_THRESHOLD) fireDetected = true;
+  if (flameVal == LOW) fireDetected = true;
+
+  if (fireDetected) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    Serial.println("🚨 FIRE DETECTED 🚨");
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  // --- Send Data to ThingSpeak ---
+  if (WiFi.status() == WL_CONNECTED) {
+    String url = String(thingspeakHost) + "?api_key=" + thingspeakApiKey;
+    url += "&field1=" + String(smokeVal);
+    url += "&field2=" + String(temp, 1);
+    url += "&field3=" + String(flameVal);
+    url += "&field4=" + String(humidity, 1);
+
+    HTTPClient http;
+    http.begin(url);
+    int httpCode = http.GET();
+    if (httpCode > 0) {
+      Serial.println("✅ ThingSpeak update OK");
+    } else {
+      Serial.println("❌ ThingSpeak update failed");
+    }
+    http.end();
+  }
+
+  delay(20000); // Wait 20 sec (ThingSpeak min is 15s)
+}
